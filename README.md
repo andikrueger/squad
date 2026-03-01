@@ -531,6 +531,64 @@ XRANGE memory:changed - +
 - **`src/supervisor/index.ts`** — supervisor daemon: HTTP `/health` endpoint, structured JSON heartbeat logs (with `trace_id`, `agent`, `action`, `duration_ms`), restart policy scaffold, event bus integration.
 - **`Dockerfile.supervisor`** — production-ready container image for the supervisor service.
 - **`docker-compose.poc.yml`** — PoC compose stack; graph memory (PR2) and embedding service (PR2) are scaffolded as placeholders.
+- **`docs/adr/0001-redis-runtime-not-source-of-truth.md`** — Architecture Decision Record defining Redis's role as a transient bus.
+
+### Redis: Runtime-Only, Not Source of Truth
+
+> **Important:** Redis is a **transient coordination layer**, not a database. Squad's durable state lives in Git-tracked files (`.squad/`, `team.md`, decisions). If Redis restarts, no persistent data is lost.
+
+| Layer | Storage | Survives Restart? |
+|---|---|---|
+| Team state, decisions, history | Git-tracked `.squad/` files | ✅ Yes |
+| Event bus messages (heartbeats, routing) | Redis Streams | ❌ No — by design |
+| Health / last-heartbeat timestamps | In-process supervisor memory | ❌ No — resets |
+| Graph memory (PR2) | RedisGraph + Git snapshot | ✅ Snapshot in Git |
+
+See [`docs/adr/0001-redis-runtime-not-source-of-truth.md`](docs/adr/0001-redis-runtime-not-source-of-truth.md) for full decision rationale.
+
+### Crash Recovery Runbook
+
+If the supervisor container crashes or Redis becomes unavailable:
+
+**1. Verify Redis is healthy:**
+```bash
+docker compose -f docker-compose.poc.yml ps redis
+docker compose -f docker-compose.poc.yml exec redis redis-cli ping
+# Expected: PONG
+```
+
+**2. Restart the supervisor:**
+```bash
+docker compose -f docker-compose.poc.yml restart supervisor
+```
+
+**3. Verify the health endpoint recovers:**
+```bash
+curl http://localhost:3000/health
+# Expected: HTTP 200, {"status":"ok","agents":[]}
+```
+
+**4. Agent re-registration:**  
+After a supervisor restart, managed agents re-announce themselves by publishing a `type:agent:ready` event to the `work:new` stream. No manual intervention required — the supervisor's consume loop picks them up within ~500 ms.
+
+**5. If Redis data is needed for debugging:**
+```bash
+# Inspect streams after a crash
+docker compose -f docker-compose.poc.yml exec redis redis-cli XRANGE work:new - + COUNT 20
+```
+
+**Note:** In-flight events at crash time are not replayed. This is acceptable for Sprint 0. Consumer-group acknowledgements (XACK) for critical events will be added in a future sprint.
+
+### Compliance Checklist
+
+Before merging changes to the supervisor or event bus:
+
+- [ ] Redis connection failures are handled gracefully — supervisor continues in degraded mode (no crash).
+- [ ] No durable state is stored exclusively in Redis — all persistent data is mirrored to `.squad/` or Git files.
+- [ ] No test asserts Redis data survives a supervisor restart.
+- [ ] All new Redis Streams topics are added to the `TOPICS` constant in `src/lib/redisStreams.ts` and documented in `docs/adr/`.
+- [ ] Health endpoint continues to return 200 even when Redis is unreachable (degraded status allowed).
+- [ ] New code tested without a live Redis instance (use `createMockRedisStreamsClient()`).
 
 ### Stopping the PoC Stack
 

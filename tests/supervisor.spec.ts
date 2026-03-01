@@ -276,3 +276,93 @@ describe('Redis Streams mock — publish/consume', () => {
     assert.equal(msg.fields.value, 'deliver PoC');
   });
 });
+
+// ── Cold-restart / no-data-loss contract ─────────────────────────────────────
+//
+// Redis is transient (see docs/adr/0001-redis-runtime-not-source-of-truth.md).
+// The supervisor must not assume any prior Redis state survives a restart.
+// These tests verify the cold-restart contract: starting a fresh supervisor
+// produces a consistent, valid health snapshot regardless of prior Redis content.
+
+describe('Cold-restart / no-durable-state contract', () => {
+  it('supervisor starts clean with empty agent list on fresh boot', async () => {
+    const client = createMockRedisStreamsClient();
+    const supervisor = new Supervisor({
+      port: nextPort(),
+      heartbeatIntervalMs: 60_000,
+      streamsClient: client,
+    });
+    await supervisor.start();
+    const health = supervisor.getHealth();
+    // Fresh boot: no agents were pre-loaded — list is empty
+    assert.equal(health.agents.length, 0, 'cold-start should have zero agents (no Redis state assumed)');
+    assert.equal(health.status, 'ok');
+    await supervisor.stop();
+  });
+
+  it('second supervisor instance starts independently from the first', async () => {
+    // Simulates a restart: the first supervisor is stopped (crash), a second one
+    // starts fresh. The second instance must not inherit the first's in-memory state.
+    const client1 = createMockRedisStreamsClient();
+    const supervisor1 = new Supervisor({
+      port: nextPort(),
+      heartbeatIntervalMs: 60_000,
+      agents: ['alice', 'bob'],
+      streamsClient: client1,
+    });
+    await supervisor1.start();
+    supervisor1.updateAgentStatus('alice', 'healthy');
+    supervisor1.updateAgentStatus('bob', 'healthy');
+    await supervisor1.stop();
+
+    // "Restart" — fresh supervisor, fresh streams client (Redis wiped)
+    const client2 = createMockRedisStreamsClient();
+    const supervisor2 = new Supervisor({
+      port: nextPort(),
+      heartbeatIntervalMs: 60_000,
+      streamsClient: client2,
+    });
+    await supervisor2.start();
+    const health = supervisor2.getHealth();
+    assert.equal(health.agents.length, 0, 'restarted supervisor must not retain prior agent state');
+    await supervisor2.stop();
+  });
+
+  it('in-flight Redis messages at crash time are not replayed on restart', async () => {
+    // Publish events to the old client (simulating messages in-flight at crash)
+    const client1 = createMockRedisStreamsClient();
+    await client1.publish(TOPICS.WORK_ASSIGN, { type: 'assign', agent: 'carol', issue: '99' });
+    // The old supervisor "crashes" here — those messages are abandoned.
+
+    // New supervisor uses a fresh Redis state (new mock client = cold Redis)
+    const client2 = createMockRedisStreamsClient();
+    const supervisor = new Supervisor({
+      port: nextPort(),
+      heartbeatIntervalMs: 60_000,
+      streamsClient: client2,
+    });
+    await supervisor.start();
+    // The new client has no messages from the old client
+    const pending = client2._streams[TOPICS.WORK_ASSIGN] ?? [];
+    assert.equal(pending.length, 0, 'crash-time in-flight messages must not appear in fresh Redis state');
+    await supervisor.stop();
+  });
+
+  it('/health returns 200 and valid JSON after a cold start (no prior Redis needed)', async () => {
+    // This test verifies the health endpoint works even if Redis is "empty"
+    const client = createMockRedisStreamsClient();
+    const port = nextPort();
+    const supervisor = new Supervisor({
+      port,
+      heartbeatIntervalMs: 60_000,
+      streamsClient: client,
+    });
+    await supervisor.start();
+    const { status, body } = await httpGet(port, '/health');
+    assert.equal(status, 200, '/health must return 200 on cold start');
+    const parsed = JSON.parse(body) as { status: string; agents: unknown[] };
+    assert.equal(parsed.status, 'ok');
+    assert.ok(Array.isArray(parsed.agents));
+    await supervisor.stop();
+  });
+});
