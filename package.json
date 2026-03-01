@@ -12,7 +12,9 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:supervisor": "tsx --test tests/supervisor.spec.ts",
+    "supervisor": "tsx src/supervisor/index.ts"
   },
   "keywords": [
     "ai",
@@ -29,5 +31,12 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/bradygaster/squad"
+  },
+  "dependencies": {
+    "ioredis": "^5.10.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
   }
 }

@@ -1,0 +1,23 @@
+FROM node:22-alpine
+
+WORKDIR /app
+
+# Install all dependencies (including devDependencies for tsx)
+COPY package*.json ./
+RUN npm ci
+
+# Copy source
+COPY src/ ./src/
+COPY tsconfig.json ./
+
+# Health check uses the HTTP endpoint
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:${SUPERVISOR_PORT:-3000}/health || exit 1
+
+# Default configuration
+ENV SUPERVISOR_PORT=3000
+ENV REDIS_URL=redis://redis:6379
+
+EXPOSE ${SUPERVISOR_PORT}
+
+CMD ["./node_modules/.bin/tsx", "src/supervisor/index.ts"]
