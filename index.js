@@ -73,8 +73,9 @@ if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
   console.log(`  ${BOLD}copilot${RESET}    Add/remove the Copilot coding agent (@copilot)`);
   console.log(`             Usage: copilot [--off] [--auto-assign]`);
   console.log(`  ${BOLD}watch${RESET}      Run Ralph's work monitor as a local polling process`);
-  console.log(`             Usage: watch [--interval <minutes>]`);
+  console.log(`             Usage: watch [--interval <minutes>] [--supervisor]`);
   console.log(`             Default: checks every 10 minutes (Ctrl+C to stop)`);
+  console.log(`             --supervisor: run the Squad Supervisor daemon (event bus + health endpoint)`);
   console.log(`  ${BOLD}plugin${RESET}     Manage plugin marketplaces`);
   console.log(`             Usage: plugin marketplace add|remove|list|browse`);
   console.log(`  ${BOLD}export${RESET}     Export squad to a portable JSON snapshot`);
@@ -108,9 +109,32 @@ function copyRecursive(src, target) {
 }
 
 
-// --- Watch subcommand (Ralph local watchdog) ---
+// --- Watch subcommand (Ralph local watchdog / Supervisor daemon) ---
 if (cmd === 'watch') {
-  const { execSync } = require('child_process');
+  const { execSync, spawn } = require('child_process');
+
+  // --supervisor flag: start the long-running supervisor daemon instead of Ralph
+  if (process.argv.includes('--supervisor')) {
+    const supervisorEntry = path.join(root, 'src', 'supervisor', 'index.ts');
+    if (!fs.existsSync(supervisorEntry)) {
+      fatal('Supervisor source not found. Run from the repository root.');
+    }
+    const tsxBin = path.join(root, 'node_modules', '.bin', 'tsx');
+    if (!fs.existsSync(tsxBin)) {
+      fatal('tsx not found -- run npm install first.');
+    }
+    const port = process.env.SUPERVISOR_PORT || '3000';
+    console.log(BOLD + 'Squad Supervisor' + RESET + ' -- starting daemon on port ' + port);
+    const child = spawn(tsxBin, [supervisorEntry], {
+      stdio: 'inherit',
+      env: { ...process.env },
+    });
+    child.on('exit', (code) => process.exit(code ?? 0));
+    // Forward termination signals to the child process
+    process.on('SIGINT', () => { try { process.kill(child.pid, 'SIGINT'); } catch {} });
+    process.on('SIGTERM', () => { try { process.kill(child.pid, 'SIGTERM'); } catch {} });
+    return;
+  }
 
   const squadDirInfo = detectSquadDir(dest);
   if (squadDirInfo.isLegacy) showDeprecationWarning();

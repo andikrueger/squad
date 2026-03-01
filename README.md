@@ -448,3 +448,92 @@ These are known platform-level issues affecting the Squad experience. They're no
 🟣 **Experimental** — v0.5.4. Contributors welcome.
 
 Conceived by [@bradygaster](https://github.com/bradygaster).
+
+---
+
+## Sprint 0 — Supervisor + Event Bus PoC
+
+This section documents how to run the Squad Next Supervisor and Redis Streams event bus PoC introduced in Sprint 0 PR1.
+
+### Required Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_URL` | `redis://localhost:6379` | Redis connection URL for the event bus |
+| `REDISGRAPH_URL` | *(none)* | Redis Graph URL for memory layer (PR2) |
+| `FAISS_PATH` | *(none)* | FAISS vector service URL for embeddings (PR2) |
+| `EMBEDDING_MODEL` | *(none)* | OpenAI-compatible embedding model name (PR2) |
+| `SUPERVISOR_PORT` | `3000` | HTTP port for the supervisor `/health` endpoint |
+
+### Running the PoC via Docker Compose
+
+```bash
+# Build and start the full PoC stack (supervisor, redis, redisgraph, faiss placeholder, agent placeholder)
+docker compose -f docker-compose.poc.yml up --build
+
+# Run in detached mode
+docker compose -f docker-compose.poc.yml up --build -d
+```
+
+### Verifying the Health Endpoint
+
+```bash
+# Once the supervisor container is running:
+curl http://localhost:3000/health
+# Expected response (HTTP 200):
+# {"status":"ok","agents":[]}
+```
+
+### Running the Supervisor Locally (without Docker)
+
+```bash
+# Requires: npm install, a running Redis instance
+REDIS_URL=redis://localhost:6379 SUPERVISOR_PORT=3000 node index.js watch --supervisor
+
+# Or use npm script directly:
+npm run supervisor
+```
+
+### Running Supervisor Tests
+
+```bash
+# Run only the supervisor + event bus unit tests (no Redis required — fully mocked):
+npm run test:supervisor
+
+# Run all tests:
+npm test
+```
+
+### Testing Event Flow on Redis Streams
+
+With the PoC stack running (`docker compose -f docker-compose.poc.yml up`):
+
+```bash
+# Connect to Redis CLI
+docker compose -f docker-compose.poc.yml exec redis redis-cli
+
+# Watch events arriving on the work:new stream
+XREAD COUNT 10 BLOCK 0 STREAMS work:new $
+
+# Publish a test event manually
+XADD work:assign * type work:assigned agent alice issue 42
+
+# Check all messages on a stream
+XRANGE work:new - +
+XRANGE work:assign - +
+XRANGE work:done - +
+XRANGE memory:changed - +
+```
+
+### Architecture Notes (Sprint 0)
+
+- **`src/lib/redisStreams.ts`** — lightweight Redis Streams abstraction supporting publish/consume/ensureGroup for topics `work:new`, `work:assign`, `work:done`, `memory:changed`.
+- **`src/supervisor/index.ts`** — supervisor daemon: HTTP `/health` endpoint, structured JSON heartbeat logs (with `trace_id`, `agent`, `action`, `duration_ms`), restart policy scaffold, event bus integration.
+- **`Dockerfile.supervisor`** — production-ready container image for the supervisor service.
+- **`docker-compose.poc.yml`** — PoC compose stack; graph memory (PR2) and embedding service (PR2) are scaffolded as placeholders.
+
+### Stopping the PoC Stack
+
+```bash
+docker compose -f docker-compose.poc.yml down
+```

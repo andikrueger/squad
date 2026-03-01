@@ -1,0 +1,108 @@
+# Squad Next — PoC Docker Compose stack
+#
+# Brings up:
+#   supervisor   — Squad Supervisor daemon (event bus + /health endpoint)
+#   redis        — Redis for Streams event bus
+#   redisgraph   — Graph memory layer (placeholder; full integration in PR2)
+#   faiss        — Vector similarity service placeholder (full integration in PR2)
+#   agent        — Minimal agent process placeholder
+#
+# Usage:
+#   docker compose -f docker-compose.poc.yml up --build
+#
+# Verify health:
+#   curl http://localhost:3000/health
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # RedisGraph placeholder — uses Redis Stack which bundles the Graph module.
+  # Full graph-memory integration is deferred to PR2.
+  redisgraph:
+    image: redis/redis-stack-server:latest
+    ports:
+      - "6380:6379"
+    environment:
+      - REDIS_ARGS=--save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # FAISS vector-similarity service placeholder.
+  # Runs a tiny HTTP stub so the supervisor can confirm the service is reachable.
+  # Full embedding integration is deferred to PR2.
+  faiss:
+    image: node:22-alpine
+    working_dir: /app
+    command: >
+      sh -c "node -e \"
+        const http = require('http');
+        http.createServer((req, res) => {
+          res.writeHead(200, {'Content-Type':'application/json'});
+          res.end(JSON.stringify({status:'ok',service:'faiss-placeholder'}));
+        }).listen(8080, () => console.log('faiss placeholder listening on :8080'));
+      \""
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Minimal agent placeholder — announces itself on the work:new Redis Stream
+  # using redis-cli so no npm install is needed at runtime.
+  agent:
+    image: redis:7-alpine
+    environment:
+      - AGENT_NAME=placeholder-agent
+    command: >
+      sh -c "
+        sleep 5 &&
+        redis-cli -u redis://redis:6379 XADD work:new '*' type agent:ready agent placeholder-agent timestamp $$(date -u +%Y-%m-%dT%H:%M:%SZ) &&
+        echo '{\"agent\":\"placeholder-agent\",\"action\":\"announced\",\"status\":\"ok\"}' &&
+        while true; do
+          sleep 30;
+          redis-cli -u redis://redis:6379 XADD work:new '*' type agent:heartbeat agent placeholder-agent timestamp $$(date -u +%Y-%m-%dT%H:%M:%SZ);
+        done
+      "
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  supervisor:
+    build:
+      context: .
+      dockerfile: Dockerfile.supervisor
+    ports:
+      - "3000:3000"
+    environment:
+      - SUPERVISOR_PORT=3000
+      - REDIS_URL=redis://redis:6379
+      - REDISGRAPH_URL=redis://redisgraph:6379
+      - FAISS_PATH=http://faiss:8080
+      - EMBEDDING_MODEL=text-embedding-3-small
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    restart: unless-stopped

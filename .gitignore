@@ -10,6 +10,9 @@ Thumbs.db
 # Node (if we add tooling later)
 node_modules/
 
+# TypeScript build output
+dist/
+
 # Built docs site (generated, not committed)
 _site/
 
